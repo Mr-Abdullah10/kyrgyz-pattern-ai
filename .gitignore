@@ -1,0 +1,49 @@
+# ── Python ────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ── Environment ──────────────────────────────────────────────
+.env
+.venv/
+env/
+venv/
+
+# ── IDE ──────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS ───────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Temporary / Generated during development ─────────────────
+pdf_text.txt
+
+# ── Raw / Intermediate Image Folders (already processed) ─────
+# These are the raw collected images BEFORE cleaning and splitting.
+# The cleaned dataset lives in dataset_split/ which IS tracked.
+D1_Not_Sorted/
+sorted/
+sorted2/
+originals/
+augmented/
+
+# ── Large Model Checkpoints ──────────────────────────────────
+# Tracked via Git LFS (see .gitattributes) or download instructions
+# If not using LFS, uncomment these lines:
+# checkpoints/*.pth
+
+# ── Large Binary Files (auto-generated, can be rebuilt) ──────
+# retrieval/ files can be rebuilt by running build_embeddings.py + build_index.py
+# Uncomment if you want to exclude them:
+# retrieval/*.npy
+# retrieval/*.index
