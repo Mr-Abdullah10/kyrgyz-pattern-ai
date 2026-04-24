@@ -13,5 +13,5 @@ index = faiss.IndexFlatIP(emb.shape[1])
 index.add(emb)
 
 faiss.write_index(index, str(RETRIEVAL_DIR / "faiss.index"))
-print(f"FAISS index saved → retrieval/faiss.index")
+print(f"FAISS index saved -> retrieval/faiss.index")
 print(f"Total vectors indexed: {index.ntotal}")

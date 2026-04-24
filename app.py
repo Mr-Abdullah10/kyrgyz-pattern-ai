@@ -9,6 +9,7 @@ import streamlit as st
 import torch
 import torch.nn as nn
 import torchvision.transforms as T
+import torchvision.models as tv_models
 import open_clip
 import faiss
 import numpy as np
@@ -26,26 +27,60 @@ st.set_page_config(
 
 CLASSES       = ["animal", "geometric", "symbolic"]
 RETRIEVAL_DIR = Path("retrieval")
-CKPT_PATH     = "checkpoints/kyrgyz_classifier_final.pth"
 DEVICE        = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# ── Available classifier models ───────────────────────────────
+AVAILABLE_MODELS = {}
+for name, path in [
+    ("ResNet50",       Path("checkpoints/resnet50_final.pth")),
+    ("MobileNetV2",    Path("checkpoints/mobilenet_final.pth")),
+    ("EfficientNet-B0", Path("checkpoints/kyrgyz_classifier_final.pth")),
+]:
+    if path.exists():
+        AVAILABLE_MODELS[name] = path
 
 # ── LOAD MODELS — cached so they only load once ───────────────
 @st.cache_resource
-def load_classifier():
-    model = timm.create_model(
-        "efficientnet_b0", pretrained=False,
-        drop_rate=0.4, drop_path_rate=0.2
-    )
-    in_feat = model.classifier.in_features
-    model.classifier = nn.Sequential(
-        nn.Dropout(p=0.4),
-        nn.Linear(in_feat, 3)
-    )
-    ckpt = torch.load(CKPT_PATH, map_location=DEVICE)
+def load_classifier(arch_name: str, ckpt_path: str):
+    """Build and load a classifier by architecture name."""
+    ckpt = torch.load(ckpt_path, map_location=DEVICE, weights_only=False)
     state = ckpt["model_state_dict"] if "model_state_dict" in ckpt else ckpt
+
+    if arch_name == "ResNet50":
+        model = tv_models.resnet50(weights=None)
+        in_feat = model.fc.in_features
+        model.fc = nn.Sequential(
+            nn.Dropout(p=0.4), nn.Linear(in_feat, 512),
+            nn.ReLU(inplace=True), nn.Dropout(p=0.3),
+            nn.Linear(512, 3),
+        )
+    elif arch_name == "MobileNetV2":
+        model = tv_models.mobilenet_v2(weights=None)
+        in_feat = model.classifier[1].in_features
+        model.classifier = nn.Sequential(
+            nn.Dropout(p=0.3), nn.Linear(in_feat, 256),
+            nn.ReLU(inplace=True), nn.Dropout(p=0.2),
+            nn.Linear(256, 3),
+        )
+    else:  # EfficientNet-B0 (legacy)
+        model = timm.create_model(
+            "efficientnet_b0", pretrained=False,
+            drop_rate=0.4, drop_path_rate=0.2
+        )
+        in_feat = model.classifier.in_features
+        model.classifier = nn.Sequential(
+            nn.Dropout(p=0.4), nn.Linear(in_feat, 3)
+        )
+
     model.load_state_dict(state)
     model.to(DEVICE).eval()
-    return model
+
+    # Return model + metadata from checkpoint
+    meta = {
+        "accuracy": ckpt.get("test_accuracy", "N/A"),
+        "f1": ckpt.get("weighted_f1", "N/A"),
+    }
+    return model, meta
 
 @st.cache_resource
 def load_clip():
@@ -115,9 +150,33 @@ def confidence_color(conf):
 st.title("Kyrgyz Traditional Pattern AI")
 st.caption("Upload a pattern image to classify it and discover its cultural meaning.")
 
+# ── Model Selection ───────────────────────────────────────────
+if AVAILABLE_MODELS:
+    model_names = list(AVAILABLE_MODELS.keys())
+    selected_model = st.sidebar.selectbox(
+        "🧠 Classification Model",
+        model_names,
+        index=0,
+        help="Choose which trained model to use for pattern classification",
+    )
+    st.sidebar.markdown("---")
+else:
+    selected_model = None
+    st.sidebar.error("No trained model checkpoints found in checkpoints/ folder.")
+
 # Load all models
 with st.spinner("Loading models..."):
-    clf_model          = load_classifier()
+    if selected_model:
+        clf_model, clf_meta = load_classifier(
+            selected_model, str(AVAILABLE_MODELS[selected_model])
+        )
+        # Show model info in sidebar
+        st.sidebar.markdown(f"**Active Model:** {selected_model}")
+        if isinstance(clf_meta.get('accuracy'), float):
+            st.sidebar.markdown(f"Test Accuracy: `{clf_meta['accuracy']*100:.1f}%`")
+            st.sidebar.markdown(f"Weighted F1: `{clf_meta['f1']:.4f}`")
+    else:
+        clf_model, clf_meta = None, {}
     clip_model, preprocess = load_clip()
     faiss_index, metadata, _ = load_retrieval()
 
