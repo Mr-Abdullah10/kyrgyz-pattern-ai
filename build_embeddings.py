@@ -6,7 +6,10 @@ from pathlib import Path
 from PIL import Image
 from tqdm import tqdm
 
-ORIGINALS_DIR = "originals"
+Image.MAX_IMAGE_PIXELS = None
+
+# Use merged_unique if available (all sources deduplicated), fallback to originals
+ORIGINALS_DIR = "merged_unique" if Path("merged_unique").exists() else "originals"
 OUTPUT_DIR    = Path("retrieval")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
@@ -52,5 +55,5 @@ np.save(OUTPUT_DIR / "embeddings.npy", emb_matrix)
 df = pd.DataFrame(records)
 df.to_csv(OUTPUT_DIR / "metadata.csv", index=False)
 
-print(f"\nSaved {len(embeddings)} embeddings → retrieval/embeddings.npy")
-print(f"Saved metadata → retrieval/metadata.csv")
+print(f"\nSaved {len(embeddings)} embeddings -> retrieval/embeddings.npy")
+print(f"Saved metadata -> retrieval/metadata.csv")

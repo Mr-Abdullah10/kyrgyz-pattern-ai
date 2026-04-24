@@ -27,6 +27,9 @@ desktop.ini
 
 # ── Temporary / Generated during development ─────────────────
 pdf_text.txt
+advance_text.txt
+archive_classification_report.json
+model_comparison.json
 
 # ── Raw / Intermediate Image Folders (already processed) ─────
 # These are the raw collected images BEFORE cleaning and splitting.
@@ -36,6 +39,9 @@ sorted/
 sorted2/
 originals/
 augmented/
+Archive/
+merged_unique/
+dataset_split_v2/
 
 # ── Large Model Checkpoints ──────────────────────────────────
 # Tracked via Git LFS (see .gitattributes) or download instructions

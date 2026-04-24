@@ -18,6 +18,7 @@ import timm
 import torch
 import torch.nn as nn
 import torchvision.transforms as T
+import torchvision.models as tv_models
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -27,11 +28,26 @@ from pydantic import BaseModel
 ROOT = Path(__file__).resolve().parent
 DATASET_SPLIT = ROOT / "dataset_split"
 RETRIEVAL_DIR = ROOT / "retrieval"
-CHECKPOINT_PATH = ROOT / "checkpoints" / "kyrgyz_classifier_final.pth"
 GENERATED_DIR = ROOT / "generated_gallery"
 
 CLASSES = ["animal", "geometric", "symbolic"]
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Available model checkpoints
+MODEL_REGISTRY = {
+    "resnet50": {
+        "path": ROOT / "checkpoints" / "resnet50_final.pth",
+        "display": "ResNet50",
+    },
+    "mobilenet": {
+        "path": ROOT / "checkpoints" / "mobilenet_final.pth",
+        "display": "MobileNetV2",
+    },
+    "efficientnet": {
+        "path": ROOT / "checkpoints" / "kyrgyz_classifier_final.pth",
+        "display": "EfficientNet-B0",
+    },
+}
 
 clf_transform = T.Compose(
     [
@@ -53,17 +69,40 @@ app.add_middleware(
 state: dict[str, Any] = {}
 
 
-def load_classifier() -> torch.nn.Module:
-    model = timm.create_model(
-        "efficientnet_b0",
-        pretrained=False,
-        drop_rate=0.4,
-        drop_path_rate=0.2,
-    )
-    in_feat = model.classifier.in_features
-    model.classifier = nn.Sequential(nn.Dropout(0.4), nn.Linear(in_feat, 3))
+def build_model_by_arch(arch_key: str) -> nn.Module:
+    """Build a model architecture without loading weights."""
+    if arch_key == "resnet50":
+        model = tv_models.resnet50(weights=None)
+        in_feat = model.fc.in_features
+        model.fc = nn.Sequential(
+            nn.Dropout(p=0.4), nn.Linear(in_feat, 512),
+            nn.ReLU(inplace=True), nn.Dropout(p=0.3),
+            nn.Linear(512, 3),
+        )
+    elif arch_key == "mobilenet":
+        model = tv_models.mobilenet_v2(weights=None)
+        in_feat = model.classifier[1].in_features
+        model.classifier = nn.Sequential(
+            nn.Dropout(p=0.3), nn.Linear(in_feat, 256),
+            nn.ReLU(inplace=True), nn.Dropout(p=0.2),
+            nn.Linear(256, 3),
+        )
+    else:  # efficientnet
+        model = timm.create_model(
+            "efficientnet_b0", pretrained=False,
+            drop_rate=0.4, drop_path_rate=0.2,
+        )
+        in_feat = model.classifier.in_features
+        model.classifier = nn.Sequential(nn.Dropout(0.4), nn.Linear(in_feat, 3))
+    return model
 
-    ckpt = torch.load(CHECKPOINT_PATH, map_location=DEVICE)
+
+def load_classifier(arch_key: str) -> torch.nn.Module:
+    """Load a classifier by architecture key."""
+    info = MODEL_REGISTRY[arch_key]
+    model = build_model_by_arch(arch_key)
+
+    ckpt = torch.load(info["path"], map_location=DEVICE, weights_only=False)
     model_state = ckpt.get("model_state_dict", ckpt)
     model.load_state_dict(model_state)
     model.to(DEVICE).eval()
@@ -75,10 +114,16 @@ def load_clip():
     return clip_model.to(DEVICE).eval(), preprocess
 
 
-def classify_image(pil_img: Image.Image):
+def classify_image(pil_img: Image.Image, model_key: str = None):
+    """Classify using the specified model (or default)."""
+    if model_key and model_key in state.get("models", {}):
+        model = state["models"][model_key]
+    else:
+        # Use first available model as default
+        model = next(iter(state.get("models", {}).values()))
     tensor = clf_transform(pil_img).unsqueeze(0).to(DEVICE)
     with torch.no_grad():
-        logits = state["clf_model"](tensor)
+        logits = model(tensor)
         probs = torch.softmax(logits, dim=1).squeeze().cpu().numpy()
     top_idx = int(np.argmax(probs))
     return CLASSES[top_idx], float(probs[top_idx]), probs.tolist()
@@ -129,7 +174,24 @@ def open_uploaded_image(upload: UploadFile) -> Image.Image:
 
 @app.on_event("startup")
 def startup_event():
-    state["clf_model"] = load_classifier()
+    # Load all available classifier models
+    state["models"] = {}
+    state["model_meta"] = {}
+    for key, info in MODEL_REGISTRY.items():
+        if info["path"].exists():
+            try:
+                state["models"][key] = load_classifier(key)
+                ckpt = torch.load(info["path"], map_location="cpu", weights_only=False)
+                state["model_meta"][key] = {
+                    "display_name": info["display"],
+                    "accuracy": ckpt.get("test_accuracy"),
+                    "f1": ckpt.get("weighted_f1"),
+                }
+                print(f"  Loaded: {info['display']}")
+            except Exception as e:
+                print(f"  Failed to load {info['display']}: {e}")
+
+    state["default_model"] = next(iter(state["models"]), None)
     state["clip_model"], state["clip_preprocess"] = load_clip()
     state["faiss_index"] = faiss.read_index(str(RETRIEVAL_DIR / "faiss.index"))
     state["metadata"] = pd.read_csv(RETRIEVAL_DIR / "metadata.csv")
@@ -151,27 +213,46 @@ def classes():
     return {"classes": CLASSES, "counts": counts}
 
 
+@app.get("/models")
+def list_models():
+    """List all available classifier models."""
+    return {
+        "available": state.get("model_meta", {}),
+        "default": state.get("default_model"),
+    }
+
+
 @app.post("/classify")
-def classify(file: UploadFile = File(...)):
+def classify(
+    file: UploadFile = File(...),
+    model: str = Query(default=None, description="Model key: resnet50, mobilenet, or efficientnet"),
+):
     pil_img = open_uploaded_image(file)
-    pred_class, confidence, probabilities = classify_image(pil_img)
+    model_key = model or state.get("default_model")
+    pred_class, confidence, probabilities = classify_image(pil_img, model_key)
     return {
         "predicted_class": pred_class,
         "confidence": confidence,
         "probabilities": dict(zip(CLASSES, probabilities)),
+        "model_used": MODEL_REGISTRY.get(model_key, {}).get("display", model_key),
     }
 
 
 @app.post("/analyze")
-def analyze(file: UploadFile = File(...)):
+def analyze(
+    file: UploadFile = File(...),
+    model: str = Query(default=None, description="Model key: resnet50, mobilenet, or efficientnet"),
+):
     pil_img = open_uploaded_image(file)
-    pred_class, confidence, probabilities = classify_image(pil_img)
+    model_key = model or state.get("default_model")
+    pred_class, confidence, probabilities = classify_image(pil_img, model_key)
     emb = get_clip_embedding(pil_img)
     similar = retrieve_similar(emb, top_k=3)
     return {
         "predicted_class": pred_class,
         "confidence": confidence,
         "probabilities": dict(zip(CLASSES, probabilities)),
+        "model_used": MODEL_REGISTRY.get(model_key, {}).get("display", model_key),
         "low_confidence_warning": confidence < 0.60,
         "similar_patterns": similar,
     }
