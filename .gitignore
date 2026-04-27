@@ -14,7 +14,6 @@ env/
 venv/
 
 # ── IDE ──────────────────────────────────────────────────────
-.vscode/
 .idea/
 *.swp
 *.swo
@@ -53,3 +52,6 @@ dataset_split_v2/
 # Uncomment if you want to exclude them:
 # retrieval/*.npy
 # retrieval/*.index
+temp_auto_push.bat
+temp_interactive_push.bat
+.gitignore
